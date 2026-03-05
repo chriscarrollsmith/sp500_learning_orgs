@@ -8,7 +8,7 @@ Which S&P 500 companies talk the most about being a learning organization on ear
 
 ### The level of "learning org" language weakly predicts forward returns
 
-Companies scoring in the top quintile on learning-org language earned **6.1% mean 6-month forward returns** vs **3.8% for the bottom quintile** — a **+2.3 percentage point spread**. The composite score correlates with forward 6-month returns at r = +0.031. Small, but consistent: the signal is positive in 14 of 20 years measured.
+Averaging the annual Q5-minus-Q1 return spread across all 20 years yields **+0.5% per 6-month period** in favor of companies with the highest learning-org scores. This average-of-annual-spreads methodology weights each year equally, avoiding the distortion that a naive pooled average introduces by overweighting recent years when stock prices (and therefore absolute return magnitudes) are higher. The composite score correlates with forward 6-month returns at r = +0.031. Small, but consistent: the signal is positive in 14 of 20 years measured.
 
 All four concept clusters contribute positively, with psychological safety (+0.024) and learning org (+0.024) slightly ahead of lean/opex (+0.019) and devops/agile (+0.020).
 
