@@ -4,31 +4,40 @@ Join learning org scores with forward 6-month stock returns.
 For each earnings call, compute the 6-month forward return from the
 call date, then analyze whether higher learning-org scores predict
 better returns.
+
+Memory-optimized: filters prices to only needed symbols via pyarrow.
 """
 
 import pandas as pd
 import pyarrow.parquet as pq
+import pyarrow.compute as pc
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+from download_data import ensure_data
 
 SCORES_FILE = "data/quarterly_scores.csv"
 PRICES_FILE = "data/stock_prices.parquet"
 OUTPUT_DIR = "data"
 
 
-def load_prices():
-    """Load stock prices, keeping only close prices, indexed by (symbol, date)."""
-    print("Loading stock prices...")
-    # Read only needed columns
-    df = pd.read_parquet(PRICES_FILE, columns=["symbol", "report_date", "close"])
+def load_prices(symbols):
+    """Load stock prices for given symbols only."""
+    ensure_data("stock_prices.parquet")
+    print(f"Loading stock prices for {len(symbols)} symbols...")
+    table = pq.read_table(
+        PRICES_FILE,
+        columns=["symbol", "report_date", "close"],
+        filters=[("symbol", "in", symbols)],
+    )
+    df = table.to_pandas()
     df["date"] = pd.to_datetime(df["report_date"])
     df["close"] = df["close"].astype(float)
     df = df.drop(columns=["report_date"]).sort_values(["symbol", "date"])
-    print(f"  {len(df)} daily prices for {df['symbol'].nunique()} symbols")
+    print(f"  {len(df)} daily prices loaded")
     return df
 
 
@@ -40,7 +49,6 @@ def compute_forward_returns(scores_df, prices_df, forward_days=126):
     print(f"Computing {forward_days}-day forward returns...")
     results = []
 
-    # Group prices by symbol for fast lookup
     price_groups = {sym: grp.set_index("date")["close"] for sym, grp in prices_df.groupby("symbol")}
 
     for _, row in tqdm(scores_df.iterrows(), total=len(scores_df), desc="Returns"):
@@ -52,7 +60,6 @@ def compute_forward_returns(scores_df, prices_df, forward_days=126):
 
         prices = price_groups[sym]
 
-        # Find first available price on or after call date (within 5 business days)
         mask_start = prices.index >= call_date
         if mask_start.sum() == 0:
             continue
@@ -61,7 +68,7 @@ def compute_forward_returns(scores_df, prices_df, forward_days=126):
             continue
 
         start_price = start_prices.iloc[0]
-        end_price = start_prices.iloc[min(forward_days, len(start_prices) - 1)]
+        end_price = start_prices.iloc[forward_days]
 
         fwd_return = (end_price - start_price) / start_price
 
@@ -130,11 +137,10 @@ def analyze_and_plot(df):
     plt.savefig(f"{OUTPUT_DIR}/quintile_returns.png", dpi=150)
     plt.close()
 
-    # Plot B: Scatter with regression line
+    # Plot B: Scatter with regression line + cluster correlations
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     ax = axes[0]
-    # Subsample for readability
     sample = df.sample(min(3000, len(df)), random_state=42)
     ax.scatter(sample["composite"], sample["fwd_6m_return"], alpha=0.15, s=8, color="steelblue")
     z = np.polyfit(df["composite"].values, df["fwd_6m_return"].values, 1)
@@ -146,11 +152,10 @@ def analyze_and_plot(df):
     ax.set_ylabel("Forward 6-Month Return")
     ax.legend()
 
-    # Plot C: Per-cluster correlations bar
     ax = axes[1]
     cluster_corrs = pd.Series(corrs)
-    colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B2", "#CCB974"]
-    cluster_corrs.plot.barh(ax=ax, color=colors, edgecolor="black", linewidth=0.5)
+    bar_colors = ["#4C72B0", "#55A868", "#C44E52", "#8172B2", "#CCB974"]
+    cluster_corrs.plot.barh(ax=ax, color=bar_colors, edgecolor="black", linewidth=0.5)
     ax.set_title("Correlation with Forward 6-Month Returns")
     ax.set_xlabel("Pearson Correlation (r)")
     ax.axvline(x=0, color="black", linewidth=0.5)
@@ -161,13 +166,13 @@ def analyze_and_plot(df):
     plt.savefig(f"{OUTPUT_DIR}/correlation_analysis.png", dpi=150)
     plt.close()
 
-    # Plot D: Time-series of Q5-Q1 spread
+    # Plot C: Q5-Q1 annual spread
     fig, ax = plt.subplots(figsize=(12, 5))
     if "Q5 (High)" in yearly_quintile.columns and "Q1 (Low)" in yearly_quintile.columns:
         spread = yearly_quintile["Q5 (High)"] - yearly_quintile["Q1 (Low)"]
         spread = spread.dropna()
-        colors_ts = ["green" if v > 0 else "red" for v in spread]
-        ax.bar(spread.index, spread.values, color=colors_ts, edgecolor="black", linewidth=0.5)
+        bar_colors_ts = ["green" if v > 0 else "red" for v in spread]
+        ax.bar(spread.index, spread.values, color=bar_colors_ts, edgecolor="black", linewidth=0.5)
         ax.set_title("Q5 (High Score) minus Q1 (Low Score): 6-Month Forward Return Spread")
         ax.set_ylabel("Return Spread (Q5 - Q1)")
         ax.set_xlabel("Earnings Call Year")
@@ -180,23 +185,41 @@ def analyze_and_plot(df):
     plt.savefig(f"{OUTPUT_DIR}/yearly_spread.png", dpi=150)
     plt.close()
 
+    # Plot D: Time-series of average composite score (all companies)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    quarterly_avg = df.groupby(df["date"].dt.to_period("Q"))["composite"].mean()
+    quarterly_avg.index = quarterly_avg.index.to_timestamp()
+    ax.plot(quarterly_avg.index, quarterly_avg.values, color="steelblue", linewidth=1.5)
+    ax.fill_between(quarterly_avg.index, quarterly_avg.values, alpha=0.2, color="steelblue")
+    ax.set_title("Average Learning Org Composite Score Over Time (All S&P 500)")
+    ax.set_ylabel("Mean Composite Score")
+    ax.set_xlabel("Quarter")
+    plt.tight_layout()
+    plt.savefig(f"{OUTPUT_DIR}/score_timeseries.png", dpi=150)
+    plt.close()
+
     # Save full joined dataset
-    df.to_csv(f"{OUTPUT_DIR}/scores_with_returns.csv", index=False)
+    df.drop(columns=["composite_quintile", "call_year"], errors="ignore").to_csv(
+        f"{OUTPUT_DIR}/scores_with_returns.csv", index=False
+    )
 
     print(f"\nOutputs saved:")
     print(f"  {OUTPUT_DIR}/scores_with_returns.csv — full joined dataset ({len(df)} rows)")
-    print(f"  {OUTPUT_DIR}/quintile_analysis.csv — quintile stats")
-    print(f"  {OUTPUT_DIR}/yearly_quintile_returns.csv — year-by-year quintile returns")
-    print(f"  {OUTPUT_DIR}/quintile_returns.png — quintile bar chart")
-    print(f"  {OUTPUT_DIR}/correlation_analysis.png — scatter + correlation bars")
-    print(f"  {OUTPUT_DIR}/yearly_spread.png — Q5-Q1 annual spread")
+    print(f"  {OUTPUT_DIR}/quintile_analysis.csv")
+    print(f"  {OUTPUT_DIR}/yearly_quintile_returns.csv")
+    print(f"  {OUTPUT_DIR}/quintile_returns.png")
+    print(f"  {OUTPUT_DIR}/correlation_analysis.png")
+    print(f"  {OUTPUT_DIR}/yearly_spread.png")
+    print(f"  {OUTPUT_DIR}/score_timeseries.png")
 
 
 def main():
     scores_df = pd.read_csv(SCORES_FILE, parse_dates=["date"])
-    prices_df = load_prices()
+    symbols = scores_df["symbol"].unique().tolist()
+    prices_df = load_prices(symbols)
 
     joined = compute_forward_returns(scores_df, prices_df)
+    del prices_df  # free memory before plotting
     analyze_and_plot(joined)
     print("\nDone!")
 

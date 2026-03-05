@@ -18,6 +18,7 @@ from tqdm import tqdm
 import time
 import gc
 import os
+from download_data import ensure_data
 
 load_dotenv()
 
@@ -179,6 +180,7 @@ def step1_extract_remarks():
         print(f"Remarks cache exists, skipping extraction.")
         return
 
+    ensure_data("transcripts.parquet")
     print("Step 1: Extracting prepared remarks...")
     pf = pq.ParquetFile("data/transcripts.parquet")
     total = pf.metadata.num_rows
